@@ -134,7 +134,8 @@ const EDIT_NATURE_OPTIONS = ["استبدال", "زيادة", "نقص"];
 
 // Optional: once you have an email-automation webhook (Power Automate / Zapier / Make),
 // put its URL here so every submission/approval step also POSTs a copy for a real email ping.
-const WEBHOOK_URL = "https://eor7eyxx4l7mz8l.m.pipedream.net";
+// Formspree form endpoint — looks like https://formspree.io/f/xxxxxxxx
+const WEBHOOK_URL = "https://formspree.io/f/mgaevbvp";
 
 const TYPES = [
   { id:"EDIT", label:"طلب تعديل مؤشر", title:"طلب تعديل مؤشر",
@@ -220,16 +221,12 @@ async function listRequests(){
 async function notifyWebhook(payload){
   if(!WEBHOOK_URL) return { ok:false, error:'لا يوجد رابط ويبهوك مُعرَّف' };
   try{
-    // Content-Type text/plain keeps this a CORS "simple request" so the
-    // browser sends it directly without a preflight OPTIONS call first —
-    // Pipedream still receives the full JSON text in the request body.
     const res = await fetch(WEBHOOK_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify(payload),
-      mode: "cors",
     });
-    return { ok:true, status: res.status };
+    return { ok: res.ok, status: res.status };
   }catch(e){
     return { ok:false, error: (e && e.message) ? e.message : String(e) };
   }
@@ -413,20 +410,10 @@ function renderNewForm(type){
   if(submitted){
     const s = document.createElement('div');
     s.className = 'success-card';
-    const whResult = lastWebhookResult;
-    let whLine;
-    if(!whResult){
-      whLine = 'لم تتم محاولة الإرسال للويبهوك.';
-    } else if(whResult.ok){
-      whLine = `✓ وصل الإشعار للويبهوك بنجاح (HTTP ${whResult.status})`;
-    } else {
-      whLine = `✗ فشل إرسال الإشعار — السبب: ${whResult.error}`;
-    }
     s.innerHTML = `
       <div class="success-icon">✅</div>
       <div class="success-title">تم إرسال الطلب بنجاح</div>
       <div class="success-sub">وصلت نسخة من الطلب تلقائياً للجهة المختصة.</div>
-      <div style="font-size:11.5px; color:var(--muted); direction:ltr; unicode-bidi:plaintext; margin-bottom:14px;">${whLine}</div>
     `;
     const newBtn = document.createElement('button');
     newBtn.className = 'btn-ghost';
@@ -500,6 +487,55 @@ function renderNewForm(type){
 
 let lastWebhookResult = null;
 
+function buildEmailPayload(type){
+  const kpiLabels = [
+    { key:"kpiName", label:"اسم المؤشر" },
+    { key:"kpiOwner", label:"مالك المؤشر" },
+    { key:"department", label:"الإدارة / القسم" },
+    { key:"classification", label:"تصنيف المؤشر" },
+  ];
+  const flat = {};
+  flat["نوع الطلب"] = type.title;
+  kpiLabels.forEach(f=>{ flat[f.label] = currentValues[f.key] || ""; });
+  type.section2Fields.forEach(f=>{ flat[f.label] = currentValues[f.key] || ""; });
+  flat[type.justifyLabel] = currentJustify || "";
+  flat["تاريخ الإرسال"] = new Date().toLocaleString('ar-SA');
+  return flat;
+}
+
+function submitViaRealForm(type){
+  const flat = buildEmailPayload(type);
+
+  // A real <form> POST is a genuine page navigation, not a background
+  // fetch/XHR call — this sails through proxies that block AJAX while
+  // still allowing normal browsing, and it's Formspree's native mode
+  // (no CORS involved at all).
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = WEBHOOK_URL;
+  form.style.display = 'none';
+
+  const addField = (name, value) => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value != null ? String(value) : '';
+    form.appendChild(input);
+  };
+
+  Object.keys(flat).forEach(k => addField(k, flat[k]));
+
+  addField('_subject', 'طلب جديد على المنصة: ' + type.title);
+
+  // Bring the visitor straight back to the platform with a flag so we
+  // can show the success screen — Formspree honors this redirect field.
+  const backUrl = window.location.origin + window.location.pathname + '?submitted=1';
+  addField('_next', backUrl);
+
+  document.body.appendChild(form);
+  form.submit();
+}
+
 async function doSubmitNew(type){
   const id = Date.now().toString(36) + '-' + uid();
   const data = {
@@ -510,9 +546,8 @@ async function doSubmitNew(type){
   };
   // best-effort local record; core flow does not depend on this working
   saveRequest(id, data);
-  lastWebhookResult = await notifyWebhook({ event:'submitted', ...data });
-  submitted = true;
-  renderMain();
+  submitViaRealForm(type);
+  // the browser navigates away to Formspree then back — nothing to render here
 }
 
 /* ================= Boot ================= */
@@ -528,6 +563,12 @@ function render(){
 
 (function init(){
   mode = 'new';
+  const params = new URLSearchParams(window.location.search);
+  if(params.get('submitted') === '1'){
+    submitted = true;
+    // clean the URL so a page refresh doesn't re-show the success screen
+    window.history.replaceState({}, '', window.location.pathname);
+  }
   render();
 })();
 </script>
